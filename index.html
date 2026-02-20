@@ -835,8 +835,11 @@
                 storage = firebase.storage();
                 messagesRef = database.ref('messages');
 
+                const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+                const recentQuery = messagesRef.orderByChild('timestamp').startAt(oneDayAgo);
+
                 // 3. 메시지 추가 리스너 (미리보기 로직 통합)
-                messagesRef.on('child_added', (snapshot) => {
+                recentQuery.on('child_added', (snapshot) => {
                     const message = snapshot.val();
                     const messageKey = snapshot.key;
                     
@@ -860,13 +863,13 @@
                 });
 
                 // 4. 메시지 변경 리스너
-                messagesRef.on('child_changed', (snapshot) => {
+                recentQuery.on('child_changed', (snapshot) => {
                     const message = snapshot.val();
                     updateMessageInUI(message, snapshot.key);
                 });
 
                 // 5. 초기 로딩 확인
-                messagesRef.once('value', () => {
+                recentQuery.once('value', () => {
                     setTimeout(() => {
                         isFirstLoad = false;
                     }, 1000);
