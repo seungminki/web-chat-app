@@ -1,3 +1,35 @@
+// 로컬 직접 실행 시 .env 로드 및 HTTP 서버 구동
+if (require.main === module) {
+  const fs = require('fs');
+  const path = require('path');
+  const http = require('http');
+
+  try {
+    const envContent = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+    envContent.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx > 0) {
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed.slice(eqIdx + 1).trim();
+        if (!process.env[key]) process.env[key] = val;
+      }
+    });
+  } catch (e) {
+    console.warn('.env 파일을 찾을 수 없습니다.');
+  }
+
+  const PORT = process.env.PORT || 3001;
+  http.createServer(async (req, res) => {
+    const result = await exports.handler({ httpMethod: req.method, headers: req.headers }, {});
+    res.writeHead(result.statusCode, result.headers);
+    res.end(result.body);
+  }).listen(PORT, () => {
+    console.log(`로컬 서버 실행 중: http://localhost:${PORT}`);
+  });
+}
+
 exports.handler = async (event, context) => {
   // CORS 헤더 설정
   const headers = {
@@ -26,7 +58,7 @@ exports.handler = async (event, context) => {
   }
 
   try {
-    
+
     // 디버깅: 환경변수 확인 (민감정보 제외)
     console.log('Environment check:', {
       hasApiKey: !!process.env.FIREBASE_API_KEY,
