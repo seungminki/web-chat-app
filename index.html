@@ -289,6 +289,18 @@
             align-self: flex-end;
             padding: 0 2px;
         }
+        .date-divider {
+            align-self: center;
+            margin: 14px 0 8px;
+            padding: 5px 12px;
+            border-radius: 999px;
+            background: #f1f3f4;
+            border: 1px solid #d1d1d1;
+            color: #666;
+            font-size: 12px;
+            font-weight: 500;
+            user-select: none;
+        }
         .message.new {
             animation: slideIn 0.3s ease-out;
         }
@@ -672,6 +684,7 @@
         let messagesRef;
         let notificationEnabled = false;
         let isFirstLoad = true;
+        let lastRenderedDateKey = null;
 
         // 프로필 사진 선택 처리
         function handleProfilePhotoSelect(event) {
@@ -1014,6 +1027,7 @@
 
                 const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
                 const recentQuery = messagesRef.orderByChild('timestamp').startAt(oneDayAgo);
+                lastRenderedDateKey = null;
 
                 // 3. 메시지 추가 리스너 (미리보기 로직 통합)
                 recentQuery.on('child_added', (snapshot) => {
@@ -1136,6 +1150,7 @@
             const container = document.getElementById('messages');
             const messageDiv = document.createElement('div');
             messageDiv.id = `msg-${messageId}`;
+            const messageDateKey = getDateKey(message.timestamp);
 
             const isMe = message.nickname === myNickname;
             messageDiv.className = `message ${isMe ? 'me' : 'other'}`;
@@ -1183,6 +1198,15 @@
             }
             
             const atBottom = isNearBottom();
+
+            if (messageDateKey !== lastRenderedDateKey) {
+                const dateDivider = document.createElement('div');
+                dateDivider.className = 'date-divider';
+                dateDivider.textContent = formatDateDivider(message.timestamp);
+                container.appendChild(dateDivider);
+                lastRenderedDateKey = messageDateKey;
+            }
+
             container.appendChild(messageDiv);
 
             if (isFirstLoad || isMe || atBottom) {
@@ -1229,6 +1253,17 @@
             const ampm = hours >= 12 ? '오후' : '오전';
             const displayHours = hours % 12 || 12;
             return `${ampm} ${displayHours}:${minutes}`;
+        }
+
+        function getDateKey(timestamp) {
+            const d = new Date(timestamp);
+            return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+        }
+
+        function formatDateDivider(timestamp) {
+            const d = new Date(timestamp);
+            const weekday = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
+            return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 (${weekday})`;
         }
 
         function escapeHtml(text) {
