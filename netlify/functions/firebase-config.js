@@ -20,7 +20,7 @@ if (require.main === module) {
     console.warn('.env 파일을 찾을 수 없습니다.');
   }
 
-  const PORT = process.env.PORT || 3001;
+  const PORT = process.env.PORT;
   http.createServer(async (req, res) => {
     const result = await exports.handler({ httpMethod: req.method, headers: req.headers }, {});
     res.writeHead(result.statusCode, result.headers);
@@ -58,7 +58,7 @@ exports.handler = async (event, context) => {
   }
 
   try {
-
+    
     // 디버깅: 환경변수 확인 (민감정보 제외)
     console.log('Environment check:', {
       hasApiKey: !!process.env.FIREBASE_API_KEY,
