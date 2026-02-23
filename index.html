@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:,">
     <title>채팅</title>
     <style>
         * {
@@ -685,6 +686,11 @@
         let notificationEnabled = false;
         let isFirstLoad = true;
         let lastRenderedDateKey = null;
+        const DAY_MS = 24 * 60 * 60 * 1000;
+        let historyWindowStart = null;
+        let isLoadingHistory = false;
+        let hasMoreHistory = true;
+        const loadedMessageIds = new Set();
 
         // 프로필 사진 선택 처리
         function handleProfilePhotoSelect(event) {
@@ -1025,14 +1031,20 @@
                     }
                 }
 
-                const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+                const oneDayAgo = Date.now() - DAY_MS;
                 const recentQuery = messagesRef.orderByChild('timestamp').startAt(oneDayAgo);
                 lastRenderedDateKey = null;
+                historyWindowStart = oneDayAgo;
+                isLoadingHistory = false;
+                hasMoreHistory = true;
+                loadedMessageIds.clear();
 
                 // 3. 메시지 추가 리스너 (미리보기 로직 통합)
                 recentQuery.on('child_added', (snapshot) => {
                     const message = snapshot.val();
                     const messageKey = snapshot.key;
+                    if (loadedMessageIds.has(messageKey)) return;
+                    loadedMessageIds.add(messageKey);
                     
                     // UI에 메시지 추가 (이 함수가 요소를 생성함)
                     addMessageToUI(message, messageKey);
@@ -1056,6 +1068,7 @@
                 // 4. 메시지 변경 리스너
                 recentQuery.on('child_changed', (snapshot) => {
                     const message = snapshot.val();
+                    if (!loadedMessageIds.has(snapshot.key)) return;
                     updateMessageInUI(message, snapshot.key);
                 });
 
@@ -1085,6 +1098,49 @@
             } catch (error) {
                 document.getElementById('nicknameError').textContent = 'Firebase 연결 실패: ' + error.message;
                 console.error('Error:', error);
+            }
+        }
+
+        async function loadPreviousDayMessages() {
+            if (!messagesRef || isLoadingHistory || !hasMoreHistory || historyWindowStart === null) return;
+
+            isLoadingHistory = true;
+            const rangeEnd = historyWindowStart;
+            const rangeStart = Math.max(0, rangeEnd - DAY_MS);
+
+            try {
+                const snapshot = await messagesRef
+                    .orderByChild('timestamp')
+                    .startAt(rangeStart)
+                    .endAt(rangeEnd - 1)
+                    .once('value');
+
+                const batch = [];
+                snapshot.forEach((child) => {
+                    const messageId = child.key;
+                    if (loadedMessageIds.has(messageId)) return;
+                    loadedMessageIds.add(messageId);
+                    batch.push({ id: messageId, message: child.val() });
+                });
+
+                batch.sort((a, b) => (a.message.timestamp || 0) - (b.message.timestamp || 0));
+                const inserted = prependHistoricalMessages(batch);
+
+                for (const item of inserted) {
+                    const url = item.message.type === 'text' ? extractUrl(item.message.text || '') : null;
+                    if (url) {
+                        addLinkPreview(url, item.element);
+                    }
+                }
+
+                historyWindowStart = rangeStart;
+                if (historyWindowStart <= 0) {
+                    hasMoreHistory = false;
+                }
+            } catch (error) {
+                console.error('이전 메시지 로딩 실패:', error);
+            } finally {
+                isLoadingHistory = false;
             }
         }
 
@@ -1146,17 +1202,15 @@
             input.focus();
         }
 
-        function addMessageToUI(message, messageId) {
-            const container = document.getElementById('messages');
+        function createMessageElement(message, messageId, options = {}) {
             const messageDiv = document.createElement('div');
             messageDiv.id = `msg-${messageId}`;
-            const messageDateKey = getDateKey(message.timestamp);
-
             const isMe = message.nickname === myNickname;
             messageDiv.className = `message ${isMe ? 'me' : 'other'}`;
             messageDiv.setAttribute('data-message-id', messageId);
+            messageDiv.setAttribute('data-timestamp', String(message.timestamp || 0));
             
-            if (!isFirstLoad) {
+            if (!isFirstLoad && !options.silent) {
                 messageDiv.classList.add('new');
             }
             
@@ -1196,8 +1250,16 @@
                     </div>
                 `;
             }
-            
+
+            return messageDiv;
+        }
+
+        function addMessageToUI(message, messageId) {
+            const container = document.getElementById('messages');
+            const messageDateKey = getDateKey(message.timestamp);
+            const isMe = message.nickname === myNickname;
             const atBottom = isNearBottom();
+            const messageDiv = createMessageElement(message, messageId);
 
             if (messageDateKey !== lastRenderedDateKey) {
                 const dateDivider = document.createElement('div');
@@ -1218,6 +1280,50 @@
             if (!isFirstLoad && message.nickname !== myNickname) {
                 notifyInTitle();
             }
+        }
+
+        function prependHistoricalMessages(messageEntries) {
+            if (!messageEntries.length) return [];
+
+            const container = document.getElementById('messages');
+            const previousScrollHeight = container.scrollHeight;
+            const previousScrollTop = container.scrollTop;
+            const firstChild = container.firstElementChild;
+            const firstMessage = container.querySelector('.message');
+            const firstMessageTimestamp = firstMessage ? Number(firstMessage.getAttribute('data-timestamp')) : null;
+            const topDateKey = firstMessageTimestamp ? getDateKey(firstMessageTimestamp) : null;
+
+            const lastIncomingDateKey = getDateKey(messageEntries[messageEntries.length - 1].message.timestamp);
+            const shareTopDate = Boolean(firstChild && firstChild.classList.contains('date-divider') && topDateKey === lastIncomingDateKey);
+            const insertBeforeNode = shareTopDate ? firstChild.nextSibling : firstChild;
+
+            const fragment = document.createDocumentFragment();
+            let previousDateKey = null;
+            const insertedMessageElements = [];
+
+            for (const entry of messageEntries) {
+                const message = entry.message;
+                const messageDateKey = getDateKey(message.timestamp);
+                const shouldDrawDivider = messageDateKey !== previousDateKey && !(shareTopDate && messageDateKey === topDateKey);
+
+                if (shouldDrawDivider) {
+                    const dateDivider = document.createElement('div');
+                    dateDivider.className = 'date-divider';
+                    dateDivider.textContent = formatDateDivider(message.timestamp);
+                    fragment.appendChild(dateDivider);
+                }
+
+                const messageElement = createMessageElement(message, entry.id, { silent: true });
+                fragment.appendChild(messageElement);
+                insertedMessageElements.push({ message, element: messageElement });
+                previousDateKey = messageDateKey;
+            }
+
+            container.insertBefore(fragment, insertBeforeNode || null);
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = previousScrollTop + (newScrollHeight - previousScrollHeight);
+
+            return insertedMessageElements;
         }
 
         function updateMessageInUI(message, messageId) {
@@ -1272,10 +1378,23 @@
             return div.innerHTML;
         }
 
+        function reachedTopDateDivider(container) {
+            if (!container) return false;
+            if (container.scrollTop <= 20) return true;
+
+            const firstDivider = container.querySelector('.date-divider');
+            if (!firstDivider) return false;
+            return container.scrollTop <= firstDivider.offsetTop + 2;
+        }
+
         // 스크롤이 하단에 도달하면 배너 숨김
         document.getElementById('messages').addEventListener('scroll', function() {
             if (isNearBottom()) {
                 hideNewMessageBanner();
+            }
+
+            if (reachedTopDateDivider(this)) {
+                loadPreviousDayMessages();
             }
         });
 
