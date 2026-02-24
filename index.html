@@ -90,6 +90,11 @@
         .chat-header-title {
             flex: 1;
         }
+        .chat-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
         .notification-btn {
             width: 36px;
             height: 36px;
@@ -108,6 +113,85 @@
         }
         .notification-btn.active {
             color: #a8d4f5;
+        }
+        .search-btn {
+            font-size: 18px;
+        }
+        .search-toolbar {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            border-bottom: 1px solid #e4e4e4;
+            background: #fafafa;
+        }
+        .search-toolbar.show {
+            display: flex;
+        }
+        .search-input {
+            flex: 1;
+            min-width: 0;
+            height: 34px;
+            border: 1px solid #d5d5d5;
+            border-radius: 10px;
+            padding: 0 12px;
+            font-size: 14px;
+            outline: none;
+            background: #fff;
+        }
+        .search-input:focus {
+            border-color: #87b3d9;
+        }
+        .search-nav-btn {
+            width: 34px;
+            height: 34px;
+            border: 1px solid #d5d5d5;
+            border-radius: 10px;
+            background: #fff;
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+        }
+        .search-nav-btn:hover {
+            background: #f4f4f4;
+        }
+        .search-nav-btn:disabled {
+            opacity: 0.45;
+            cursor: default;
+            background: #fff;
+        }
+        .search-run-btn {
+            height: 34px;
+            border: 1px solid #d5d5d5;
+            border-radius: 10px;
+            background: #fff;
+            padding: 0 12px;
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .search-run-btn:hover {
+            background: #f4f4f4;
+        }
+        .search-count {
+            min-width: 56px;
+            text-align: center;
+            font-size: 12px;
+            color: #666;
+            user-select: none;
+        }
+        .search-close-btn {
+            width: 34px;
+            height: 34px;
+            border: none;
+            border-radius: 10px;
+            background: transparent;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+        }
+        .search-close-btn:hover {
+            background: #ececec;
         }
         .messages-wrapper {
             flex: 1;
@@ -248,6 +332,9 @@
         .message.me .message-bubble {
             background: #D2E3FC;
             color: #000;
+        }
+        .message.search-selected .message-bubble {
+            box-shadow: 0 0 0 2px #1a73e8 inset;
         }
         .message-bubble img {
             max-width: 250px;
@@ -631,9 +718,18 @@
     <div class="chat-container" id="chatContainer">
         <div class="chat-header">
             <div class="chat-header-title" id="chatHeader">채팅</div>
-            <button class="notification-btn" id="notificationBtn" onclick="toggleNotification()" title="알림 설정">
-                🔔
-            </button>
+            <div class="chat-header-actions">
+                <button class="notification-btn search-btn" id="searchBtn" onclick="toggleSearchBar()" title="메시지 찾기">🔎</button>
+                <button class="notification-btn" id="notificationBtn" onclick="toggleNotification()" title="알림 설정">🔔</button>
+            </div>
+        </div>
+        <div class="search-toolbar" id="searchToolbar">
+            <input type="text" id="searchInput" class="search-input" placeholder="메시지 내용 검색" oninput="onSearchInputChanged()" onkeydown="handleSearchKeyDown(event)">
+            <button class="search-run-btn" onclick="executeSearch()" title="검색 실행">검색</button>
+            <span class="search-count" id="searchCount">0/0</span>
+            <button class="search-nav-btn" id="searchPrevBtn" onclick="moveSearchResult(-1)" title="이전 결과" disabled>↑</button>
+            <button class="search-nav-btn" id="searchNextBtn" onclick="moveSearchResult(1)" title="다음 결과" disabled>↓</button>
+            <button class="search-close-btn" onclick="closeSearchBar()" title="닫기">✕</button>
         </div>
         <div class="messages-wrapper">
             <div class="chat-messages" id="messages">
@@ -690,7 +786,11 @@
         let historyWindowStart = null;
         let isLoadingHistory = false;
         let hasMoreHistory = true;
+        let canLoadOlderOnScroll = false;
         const loadedMessageIds = new Set();
+        let searchMatches = [];
+        let currentSearchMatchIndex = -1;
+        let toastTimer = null;
 
         // 프로필 사진 선택 처리
         function handleProfilePhotoSelect(event) {
@@ -945,15 +1045,20 @@
         }
 
         // 토스트 메시지 표시
-        function showToast(message) {
+        function showToast(message, duration = 3000) {
             const toast = document.getElementById('notificationToast');
             const toastMessage = document.getElementById('toastMessage');
             toastMessage.textContent = message;
             toast.classList.add('show');
-            
-            setTimeout(() => {
+
+            if (toastTimer) {
+                clearTimeout(toastTimer);
+            }
+
+            toastTimer = setTimeout(() => {
                 toast.classList.remove('show');
-            }, 3000);
+                toastTimer = null;
+            }, duration);
         }
 
         // 브라우저 알림 표시
@@ -1016,6 +1121,7 @@
                 database = firebase.database();
                 storage = firebase.storage();
                 messagesRef = database.ref('messages');
+                canLoadOlderOnScroll = false;
 
                 // 프로필 사진 업로드 (선택한 경우)
                 if (selectedProfilePhotoFile) {
@@ -1030,6 +1136,12 @@
                         showToast('프로필 사진 업로드 실패. 사진 없이 입장합니다.');
                     }
                 }
+
+                // UI를 먼저 표시해 초기 메시지 렌더 시 실제 스크롤 높이를 사용할 수 있게 한다.
+                document.getElementById('nicknameContainer').style.display = 'none';
+                document.getElementById('chatContainer').classList.add('active');
+                document.getElementById('chatHeader').textContent = myNickname;
+                document.getElementById('messageInput').focus();
 
                 const oneDayAgo = Date.now() - DAY_MS;
                 const recentQuery = messagesRef.orderByChild('timestamp').startAt(oneDayAgo);
@@ -1074,9 +1186,16 @@
 
                 // 5. 초기 로딩 확인
                 recentQuery.once('value', () => {
-                    setTimeout(() => {
-                        isFirstLoad = false;
-                    }, 1000);
+                    // 초기 렌더 직후 맨 아래 고정 후에만 상단 스크롤 로딩을 허용한다.
+                    requestAnimationFrame(() => {
+                        const container = document.getElementById('messages');
+                        container.scrollTop = container.scrollHeight;
+                        requestAnimationFrame(() => {
+                            container.scrollTop = container.scrollHeight;
+                            isFirstLoad = false;
+                            canLoadOlderOnScroll = true;
+                        });
+                    });
                 });
 
                 // 6. 알림 설정 복구
@@ -1088,12 +1207,6 @@
                         document.getElementById('notificationBtn').classList.add('active');
                     }
                 }
-
-                // 7. UI 전환
-                document.getElementById('nicknameContainer').style.display = 'none';
-                document.getElementById('chatContainer').classList.add('active');
-                document.getElementById('chatHeader').textContent = myNickname;
-                document.getElementById('messageInput').focus();
 
             } catch (error) {
                 document.getElementById('nicknameError').textContent = 'Firebase 연결 실패: ' + error.message;
@@ -1280,6 +1393,7 @@
             if (!isFirstLoad && message.nickname !== myNickname) {
                 notifyInTitle();
             }
+
         }
 
         function prependHistoricalMessages(messageEntries) {
@@ -1322,7 +1436,6 @@
             container.insertBefore(fragment, insertBeforeNode || null);
             const newScrollHeight = container.scrollHeight;
             container.scrollTop = previousScrollTop + (newScrollHeight - previousScrollHeight);
-
             return insertedMessageElements;
         }
 
@@ -1350,6 +1463,121 @@
             if (atBottom) {
                 container.scrollTop = container.scrollHeight;
             }
+
+        }
+
+        function toggleSearchBar() {
+            const toolbar = document.getElementById('searchToolbar');
+            if (toolbar.classList.contains('show')) {
+                closeSearchBar();
+                return;
+            }
+
+            toolbar.classList.add('show');
+            document.getElementById('searchBtn').classList.add('active');
+            const input = document.getElementById('searchInput');
+            input.focus();
+            input.select();
+            resetSearchResults();
+        }
+
+        function closeSearchBar() {
+            document.getElementById('searchToolbar').classList.remove('show');
+            document.getElementById('searchBtn').classList.remove('active');
+            document.getElementById('searchInput').value = '';
+            resetSearchResults();
+        }
+
+        function onSearchInputChanged() {
+            resetSearchResults();
+        }
+
+        function executeSearch() {
+            const query = document.getElementById('searchInput').value.trim().toLowerCase();
+            searchMatches = [];
+            currentSearchMatchIndex = -1;
+            clearSearchSelection();
+
+            if (!query) {
+                updateSearchNavButtons();
+                return;
+            }
+
+            const messageEls = document.querySelectorAll('#messages .message');
+            messageEls.forEach((messageEl) => {
+                const bubble = messageEl.querySelector('.message-bubble');
+                if (!bubble) return;
+                const text = (bubble.textContent || '').toLowerCase();
+                if (text.includes(query)) {
+                    searchMatches.push(messageEl);
+                }
+            });
+
+            if (searchMatches.length === 0) {
+                showToast('해당 내용이 포함된 메시지가 없습니다', 1000);
+                updateSearchNavButtons();
+                return;
+            }
+
+            currentSearchMatchIndex = 0;
+            focusSearchResult(currentSearchMatchIndex);
+            updateSearchNavButtons();
+        }
+
+        function handleSearchKeyDown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                moveSearchResult(event.shiftKey ? -1 : 1);
+            } else if (event.key === 'Escape') {
+                closeSearchBar();
+            }
+        }
+
+        function moveSearchResult(direction) {
+            if (!searchMatches.length) return;
+            currentSearchMatchIndex = (currentSearchMatchIndex + direction + searchMatches.length) % searchMatches.length;
+            focusSearchResult(currentSearchMatchIndex);
+            updateSearchCount();
+        }
+
+        function focusSearchResult(index) {
+            clearSearchSelection();
+            const target = searchMatches[index];
+            if (!target) return;
+            target.classList.add('search-selected');
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            updateSearchCount();
+        }
+
+        function clearSearchSelection() {
+            const selected = document.querySelector('#messages .message.search-selected');
+            if (selected) {
+                selected.classList.remove('search-selected');
+            }
+        }
+
+        function updateSearchNavButtons() {
+            const disabled = searchMatches.length === 0;
+            document.getElementById('searchPrevBtn').disabled = disabled;
+            document.getElementById('searchNextBtn').disabled = disabled;
+            updateSearchCount();
+        }
+
+        function updateSearchCount() {
+            const countEl = document.getElementById('searchCount');
+            if (!countEl) return;
+            if (!searchMatches.length || currentSearchMatchIndex < 0) {
+                countEl.textContent = '0/0';
+                return;
+            }
+            countEl.textContent = `${currentSearchMatchIndex + 1}/${searchMatches.length}`;
+        }
+
+        function resetSearchResults() {
+            searchMatches = [];
+            currentSearchMatchIndex = -1;
+            clearSearchSelection();
+            updateSearchNavButtons();
         }
 
         function formatTime(timestamp) {
@@ -1393,7 +1621,7 @@
                 hideNewMessageBanner();
             }
 
-            if (reachedTopDateDivider(this)) {
+            if (canLoadOlderOnScroll && reachedTopDateDivider(this)) {
                 loadPreviousDayMessages();
             }
         });
